@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StreamHub - Your Personal Cloud Streaming</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Font Awesome -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="assets/css/style.css" />
+
+    <!-- AWS SDK V2 -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1460.0.min.js"></script>
+
+    <!-- DuckDB WASM Dependencies (Optional, loaded dynamically by JS) -->
+    <!-- <script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-browser-mvp.worker.js" type="module"></script> -->
+
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              glass: "rgba(255, 255, 255, 0.1)",
+              glassBorder: "rgba(255, 255, 255, 0.2)",
+              primary: "#6366f1",
+              secondary: "#a855f7",
+            },
+            backdropBlur: {
+              xs: "2px",
+            },
+          },
+        },
+      };
+    </script>
+  </head>
+  <body
+    class="bg-gray-900 text-white min-h-screen font-sans selection:bg-primary selection:text-white overflow-x-hidden"
+  >
+    <!-- Background Effects -->
+    <div class="fixed inset-0 -z-10">
+      <div
+        class="absolute top-0 left-0 w-96 h-96 bg-primary/30 rounded-full blur-3xl opacity-30 animate-pulse"
+      ></div>
+      <div
+        class="absolute bottom-0 right-0 w-96 h-96 bg-secondary/30 rounded-full blur-3xl opacity-30 animate-pulse"
+        style="animation-delay: 2s"
+      ></div>
+    </div>
+
+    <!-- Login Screen -->
+    <div
+      id="login-view"
+      class="flex items-center justify-center min-h-screen p-4"
+    >
+      <div
+        class="glass-panel w-full max-w-md p-8 rounded-2xl shadow-2xl backdrop-blur-xl border border-glassBorder relative overflow-hidden"
+      >
+        <div
+          class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary to-secondary"
+        ></div>
+
+        <div class="text-center mb-8">
+          <div
+            class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-primary to-secondary mb-4 shadow-lg shadow-primary/30"
+          >
+            <i class="fas fa-play text-2xl text-white"></i>
+          </div>
+          <h1
+            class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-gray-400"
+          >
+            StreamHub
+          </h1>
+          <p class="text-gray-400 mt-2 text-sm">Accedi al tuo S3 Data Lake</p>
+        </div>
+
+        <!-- Unlock View (Hidden by default) -->
+        <div id="unlock-form" class="hidden">
+          <div class="mb-6 text-center">
+            <div
+              class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-green-500/10 text-green-500 mb-3"
+            >
+              <i class="fas fa-lock"></i>
+            </div>
+            <h3 class="text-lg font-medium text-white">Credenziali salvate</h3>
+            <p class="text-xs text-gray-400">
+              Inserisci la tua Master Password per sbloccare
+            </p>
+          </div>
+
+          <form id="unlock-submit-form" class="space-y-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-400 mb-1 ml-1"
+                >MASTER PASSWORD</label
+              >
+              <input
+                type="password"
+                id="unlock-password"
+                class="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
+                placeholder="••••••••"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              class="w-full bg-gradient-to-r from-primary to-secondary text-white font-medium py-3 rounded-lg hover:opacity-90 transition-opacity shadow-lg shadow-primary/25"
+            >
+              Sblocca e Accedi
+            </button>
+
+            <button
+              type="button"
+              id="reset-vault-btn"
+              class="w-full text-xs text-red-400 hover:text-red-300 py-2"
+            >
+              Dimentica credenziali salvate
+            </button>
+          </form>
+        </div>
+
+        <!-- Standard Login Form -->
+        <form id="login-form" class="space-y-5">
+          <div class="group">
+            <label
+              class="block text-xs uppercase tracking-wider text-gray-500 mb-1 font-semibold group-focus-within:text-primary transition-colors"
+              >Endpoint URL</label
+            >
+            <div class="relative">
+              <i
+                class="fas fa-globe absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"
+              ></i>
+              <input
+                type="url"
+                id="endpoint"
+                required
+                placeholder="https://s3.cubbit.eu"
+                value="https://s3.cubbit.eu"
+                class="w-full bg-black/20 border border-gray-700 rounded-lg py-2.5 pl-10 pr-4 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all text-sm placeholder-gray-600"
+              />
+            </div>
+          </div>
+
+          <div class="group">
+            <label
+              class="block text-xs uppercase tracking-wider text-gray-500 mb-1 font-semibold group-focus-within:text-primary transition-colors"
+              >Tipo Contenuto (Bucket)</label
+            >
+            <div class="relative">
+              <i
+                class="fas fa-box absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"
+              ></i>
+              <select
+                id="bucket"
+                class="w-full bg-black/20 border border-gray-700 rounded-lg py-2.5 pl-10 pr-4 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all text-sm text-white appearance-none cursor-pointer"
+              >
+                <option value="series">Serie TV (series)</option>
+                <option value="animecdn">Anime (animecdn)</option>
+                <option value="movie">Film (movie)</option>
+              </select>
+              <i
+                class="fas fa-chevron-down absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-xs pointer-events-none"
+              ></i>
+            </div>
+          </div>
+
+          <div class="group">
+            <label
+              class="block text-xs uppercase tracking-wider text-gray-500 mb-1 font-semibold group-focus-within:text-primary transition-colors"
+              >Access Key</label
+            >
+            <div class="relative">
+              <i
+                class="fas fa-key absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"
+              ></i>
+              <input
+                type="password"
+                id="accessKey"
+                required
+                placeholder="AKI..."
+                class="w-full bg-black/20 border border-gray-700 rounded-lg py-2.5 pl-10 pr-4 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all text-sm placeholder-gray-600"
+              />
+            </div>
+          </div>
+
+          <div class="group">
+            <label
+              class="block text-xs uppercase tracking-wider text-gray-500 mb-1 font-semibold group-focus-within:text-primary transition-colors"
+              >Secret Key</label
+            >
+            <div class="relative">
+              <i
+                class="fas fa-lock absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"
+              ></i>
+              <input
+                type="password"
+                id="secretKey"
+                required
+                placeholder="Secret..."
+                class="w-full bg-black/20 border border-gray-700 rounded-lg py-2.5 pl-10 pr-4 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all text-sm placeholder-gray-600"
+              />
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 py-2">
+            <input
+              type="checkbox"
+              id="save-securely"
+              class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-primary focus:ring-primary/50"
+            />
+            <label
+              for="save-securely"
+              class="text-sm text-gray-300 select-none cursor-pointer"
+              >Ricorda credenziali in modo sicuro</label
+            >
+          </div>
+
+          <!-- Master Password Input (Initially hidden) -->
+          <div id="setup-master-password" class="hidden animate-fade-in">
+            <label class="block text-xs font-medium text-primary mb-1 ml-1"
+              >IMPOSTA MASTER PASSWORD</label
+            >
+            <input
+              type="password"
+              id="new-master-password"
+              class="w-full bg-primary/10 border border-primary/30 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
+              placeholder="Scegli una password per il vault"
+            />
+            <p class="text-[10px] text-gray-500 mt-1 ml-1">
+              Questa password servirà per decifrare le tue credenziali in
+              futuro.
+            </p>
+          </div>
+
+          <button
+            type="submit"
+            class="w-full bg-gradient-to-r from-primary to-secondary hover:from-primary/90 hover:to-secondary/90 text-white font-bold py-3 px-4 rounded-lg shadow-lg shadow-primary/20 transform hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-center gap-2"
+          >
+            <span>Accedi</span>
+            <i class="fas fa-arrow-right text-sm"></i>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="app-view" class="hidden flex h-screen overflow-hidden">
+      <!-- Sidebar -->
+      <aside
+        class="w-64 glass-panel border-r border-glassBorder flex-shrink-0 flex flex-col z-20"
+      >
+        <div class="p-6 border-b border-glassBorder flex items-center gap-3">
+          <div
+            class="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-lg"
+          >
+            <i class="fas fa-play text-xs"></i>
+          </div>
+          <h2 class="font-bold text-lg tracking-tight">StreamHub</h2>
+        </div>
+
+        <!-- Bucket Selector in App -->
+        <div class="px-4 pt-4">
+          <select
+            id="app-bucket-selector"
+            class="w-full bg-black/20 border border-glassBorder rounded-lg py-1.5 px-3 text-xs text-gray-300 focus:outline-none focus:border-primary cursor-pointer"
+          >
+            <option value="series">Serie TV</option>
+            <option value="animecdn">Anime</option>
+            <option value="movie">Film</option>
+          </select>
+        </div>
+
+        <div class="p-4">
+          <div class="relative">
+            <i
+              class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-xs"
+            ></i>
+            <input
+              type="text"
+              id="search-series"
+              placeholder="Cerca serie..."
+              class="w-full bg-black/20 border border-glassBorder rounded-lg py-2 pl-9 pr-3 text-xs focus:outline-none focus:border-primary transition-all"
+            />
+          </div>
+        </div>
+
+        <nav
+          class="flex-1 overflow-y-auto custom-scrollbar px-3 py-2 space-y-1"
+          id="series-list"
+        >
+          <!-- Series items will be injected here -->
+          <div class="animate-pulse space-y-3 p-2">
+            <div class="h-4 bg-white/10 rounded w-3/4"></div>
+            <div class="h-4 bg-white/10 rounded w-1/2"></div>
+            <div class="h-4 bg-white/10 rounded w-5/6"></div>
+          </div>
+        </nav>
+
+        <div class="p-4 border-t border-glassBorder bg-black/10">
+          <div class="flex items-center gap-3">
+            <div
+              class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]"
+            ></div>
+            <span class="text-xs text-gray-400">DuckDB Connected</span>
+          </div>
+          <button
+            id="logout-btn"
+            class="mt-3 w-full text-xs text-gray-400 hover:text-white flex items-center gap-2 transition-colors"
+          >
+            <i class="fas fa-sign-out-alt"></i> Disconnetti
+          </button>
+        </div>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="flex-1 flex flex-col relative overflow-hidden bg-black/20">
+        <!-- Header -->
+        <header
+          class="h-16 border-b border-glassBorder flex items-center justify-between px-8 glass-panel z-10"
+        >
+          <div>
+            <h1 id="current-series-title" class="text-xl font-bold">
+              Seleziona una serie
+            </h1>
+            <div class="text-xs text-gray-400 flex items-center gap-2">
+              <span id="current-path">Home</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-4">
+            <button
+              id="sync-status"
+              class="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center hover:bg-white/10 transition-colors"
+              title="Sync Status"
+            >
+              <i class="fas fa-cloud text-green-400 text-xs"></i>
+            </button>
+          </div>
+        </header>
+
+        <!-- Content Area -->
+        <div
+          id="content-area"
+          class="flex-1 overflow-y-auto p-8 custom-scrollbar"
+        >
+          <!-- Welcome State -->
+          <div
+            id="welcome-state"
+            class="h-full flex flex-col items-center justify-center text-center text-gray-500"
+          >
+            <div
+              class="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center mb-6"
+            >
+              <i class="fas fa-film text-4xl opacity-50"></i>
+            </div>
+            <h3 class="text-2xl font-bold text-gray-300 mb-2">
+              Benvenuto su StreamHub
+            </h3>
+            <p class="max-w-md">
+              Seleziona una serie dalla barra laterale per iniziare a guardare.
+              I tuoi progressi verranno salvati automaticamente.
+            </p>
+          </div>
+
+          <!-- Seasons Grid -->
+          <div
+            id="seasons-grid"
+            class="hidden grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
+          >
+            <!-- Seasons will be injected here -->
+          </div>
+
+          <!-- Episodes List -->
+          <div id="episodes-list" class="hidden space-y-2">
+            <!-- Episodes will be injected here -->
+          </div>
+
+          <!-- Video Player -->
+          <div id="player-container" class="hidden flex flex-col h-full">
+            <div
+              class="relative w-full aspect-video bg-black rounded-xl overflow-hidden shadow-2xl ring-1 ring-white/10"
+            >
+              <video
+                id="video-player"
+                class="w-full h-full"
+                controls
+                crossorigin="anonymous"
+              >
+                Il tuo browser non supporta il tag video.
+              </video>
+              <!-- Custom overlay can go here -->
+            </div>
+            <div class="mt-6">
+              <h2 id="playing-title" class="text-2xl font-bold mb-2">
+                Titolo Episodio
+              </h2>
+              <p id="playing-info" class="text-gray-400">
+                Stagione X • Episodio Y
+              </p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div
+      id="toast"
+      class="fixed bottom-4 right-4 translate-y-20 opacity-0 transition-all duration-300 z-50"
+    >
+      <div
+        class="glass-panel px-4 py-3 rounded-lg shadow-lg border border-glassBorder flex items-center gap-3"
+      >
+        <i class="fas fa-info-circle text-primary"></i>
+        <span id="toast-message" class="text-sm">Notification</span>
+      </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div
+      id="loading-overlay"
+      class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] hidden flex items-center justify-center flex-col"
+    >
+      <div
+        class="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4"
+      ></div>
+      <p
+        id="loading-text"
+        class="text-sm font-medium text-gray-300 animate-pulse"
+      >
+        Caricamento...
+      </p>
+    </div>
+
+    <!-- Scripts -->
+    <script type="module" src="assets/js/crypto-utils.js"></script>
+    <script type="module" src="assets/js/s3-manager.js"></script>
+    <script type="module" src="assets/js/duckdb-manager.js"></script>
+    <script type="module" src="assets/js/app.js"></script>
+  </body>
+</html>
