@@ -50,7 +50,7 @@ class DuckDBManager {
   }
 
   async initSchema() {
-    // Create schema for progress
+    // Initial creation of empty table if needed (fallback)
     await this.conn.query(`
             CREATE TABLE IF NOT EXISTS progress (
                 series_name VARCHAR,
@@ -59,31 +59,52 @@ class DuckDBManager {
                 timestamp DOUBLE,
                 duration DOUBLE,
                 last_updated TIMESTAMP,
-                completed BOOLEAN,
-                PRIMARY KEY (series_name, season, episode_name)
+                completed BOOLEAN
             );
         `);
   }
 
-  async syncFromS3(bucket) {
-    // Try to load parquet file from S3
-    // Tracking file is always in bucket/streamhub/progress_tracker.parquet
-    const parquetUrl = `s3://${bucket}/streamhub/progress_tracker.parquet`;
+  async loadFromS3(bucket) {
+    const key = `streamhub/progress_tracker.parquet`;
+    const localFileName = "progress_tracker_loaded.parquet";
 
     try {
-      // Check if file exists by trying to read it
-      // We use read_parquet with union_by_name to handle schema evolution if needed
+      console.log("Loading from S3 via SDK Download:", key);
+
+      // Download file using S3 SDK (MangaDB logic)
+      const parquetData = await window.s3Manager.downloadFile(key, bucket);
+
+      if (!parquetData) {
+        console.warn("No progress file found on S3. Initializing empty table.");
+        await this.initSchema();
+        return;
+      }
+
+      // Register buffer in DuckDB
+      await this.db.registerFileBuffer(localFileName, parquetData);
+
+      // Clear existing table and load new data
+      await this.conn.query("DELETE FROM progress");
+
       await this.conn.query(`
-                INSERT OR REPLACE INTO progress 
-                SELECT * FROM read_parquet('${parquetUrl}');
-            `);
-      console.log("Sync from S3 completed for bucket:", bucket);
+          INSERT INTO progress 
+          SELECT * FROM read_parquet('${localFileName}')
+      `);
+
+      console.log("Load from S3 completed and ingested into memory.");
+
+      // Cleanup
+      await this.db.dropFile(localFileName);
     } catch (e) {
-      console.log(
-        "No remote progress file found or sync failed (first run?):",
-        e
-      );
+      console.error("Load from S3 failed:", e);
+      // Ensure we have a working table even if load fails
+      await this.initSchema();
     }
+  }
+
+  // Alias for backward compatibility if needed, but we should use loadFromS3
+  async syncFromS3(bucket) {
+    return this.loadFromS3(bucket);
   }
 
   async syncToS3(bucket) {
@@ -92,21 +113,52 @@ class DuckDBManager {
 
     try {
       console.log("Exporting progress to local parquet...");
+
+      // DEBUG: Check what we are about to export
+      const countResult = await this.conn.query(
+        "SELECT count(*), sum(completed::int) FROM progress"
+      );
+      console.log("Stats before export:", countResult.toArray()[0]);
+
+      // Use logic from MangaDB: Export to local file first, then upload via S3 SDK
+      // Added OVERWRITE TRUE
       await this.conn.query(`
-                COPY progress TO '${localFileName}' (FORMAT PARQUET);
+                COPY (SELECT * FROM progress ORDER BY series_name, season, episode_name) 
+                TO '${localFileName}' (FORMAT PARQUET, OVERWRITE TRUE);
             `);
 
       // Read file buffer from DuckDB virtual FS
       const buffer = await this.db.copyFileToBuffer(localFileName);
 
-      console.log("Uploading to S3:", parquetKey);
+      if (!buffer || buffer.length === 0) {
+        console.error("Exported parquet file is empty!");
+        return;
+      }
+
+      console.log(
+        `Uploading to S3: ${parquetKey} (${buffer.length} bytes) to bucket: ${bucket}`
+      );
+
+      // Ensure we are using the correct bucket
+      if (!bucket) {
+        throw new Error("Bucket is undefined in syncToS3");
+      }
+
+      console.log(
+        `[DuckDB] Starting syncToS3. Bucket: ${bucket}, Key: ${parquetKey}`
+      );
+
       await window.s3Manager.uploadFile(
         parquetKey,
         buffer,
-        "application/vnd.apache.parquet"
+        "application/vnd.apache.parquet",
+        bucket
       );
 
-      console.log("Sync to S3 completed");
+      // Clean up local file
+      await this.db.dropFile(localFileName);
+
+      console.log("Sync to S3 completed successfully via S3 SDK upload.");
     } catch (e) {
       console.error("Failed to sync to S3:", e);
       throw e;
@@ -121,36 +173,70 @@ class DuckDBManager {
     duration,
     completed
   ) {
+    console.log(
+      `Updating progress: ${series} S${season} E${episode} - Time: ${timestamp}, Completed: ${completed}`
+    );
+
+    const sName = series.replace(/'/g, "''");
+    const sSeason = season.replace(/'/g, "''");
+    const sEpisode = episode.replace(/'/g, "''");
+
+    // Use DELETE + INSERT to avoid primary key issues and ensure clean state
     await this.conn.query(`
-            INSERT OR REPLACE INTO progress VALUES (
-                '${series.replace(/'/g, "''")}', 
-                '${season.replace(/'/g, "''")}', 
-                '${episode.replace(/'/g, "''")}', 
+            DELETE FROM progress 
+            WHERE series_name = '${sName}' 
+            AND season = '${sSeason}' 
+            AND episode_name = '${sEpisode}';
+    `);
+
+    await this.conn.query(`
+            INSERT INTO progress VALUES (
+                '${sName}', 
+                '${sSeason}', 
+                '${sEpisode}', 
                 ${timestamp}, 
                 ${duration}, 
                 now(), 
                 ${completed}
             );
         `);
+
+    // Verify update
+    const check = await this.conn.query(`
+        SELECT completed FROM progress 
+        WHERE series_name = '${sName}' 
+        AND episode_name = '${sEpisode}'
+    `);
+    console.log("Verification of update:", check.toArray());
   }
 
   async getProgress(series, season, episode) {
-    const result = await this.conn.query(`
+    try {
+      const result = await this.conn.query(`
             SELECT timestamp, completed FROM progress 
             WHERE series_name = '${series.replace(/'/g, "''")}' 
             AND season = '${season.replace(/'/g, "''")}'
             AND episode_name = '${episode.replace(/'/g, "''")}'
         `);
-    return result.toArray();
+      return result.toArray();
+    } catch (e) {
+      console.warn("Read from local progress failed:", e);
+      return [];
+    }
   }
 
   async getSeriesProgress(series) {
-    const result = await this.conn.query(`
+    try {
+      const result = await this.conn.query(`
             SELECT season, episode_name, timestamp, completed 
             FROM progress 
             WHERE series_name = '${series.replace(/'/g, "''")}'
         `);
-    return result.toArray();
+      return result.toArray();
+    } catch (e) {
+      console.warn("Read from local progress failed:", e);
+      return [];
+    }
   }
 }
 

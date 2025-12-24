@@ -107,9 +107,23 @@ class S3Manager {
     return allObjects;
   }
 
-  getSignedUrl(key) {
+  async downloadFile(key, bucket = null) {
+    const targetBucket = bucket || this.bucket;
+    try {
+      const data = await this.s3.getObject({
+        Bucket: targetBucket,
+        Key: key
+      }).promise();
+      return new Uint8Array(data.Body);
+    } catch (e) {
+      if (e.code === "NoSuchKey") return null;
+      throw e;
+    }
+  }
+
+  getSignedUrl(key, bucket = null) {
     return this.s3.getSignedUrl("getObject", {
-      Bucket: this.bucket,
+      Bucket: bucket || this.bucket,
       Key: key,
       Expires: 3600 * 3, // 3 hours
     });
@@ -126,15 +140,34 @@ class S3Manager {
       .promise();
   }
 
-  async uploadFile(key, body, contentType = "application/octet-stream") {
-    await this.s3
-      .putObject({
-        Bucket: this.bucket,
-        Key: key,
-        Body: body,
-        ContentType: contentType,
-      })
-      .promise();
+  async uploadFile(key, body, contentType = "application/octet-stream", bucket = null) {
+    const targetBucket = bucket || this.bucket;
+    console.log(`[S3Manager] Uploading ${key} (${body.length || body.byteLength} bytes) to bucket: ${targetBucket}`);
+    console.log(`[S3Manager] Endpoint: ${this.endpoint}`);
+    try {
+        const result = await this.s3
+        .putObject({
+            Bucket: targetBucket,
+            Key: key,
+            Body: body,
+            ContentType: contentType,
+        })
+        .promise();
+        console.log(`[S3Manager] Upload successful. ETag: ${result.ETag}`);
+        
+        // Verify upload by checking metadata
+        try {
+            const head = await this.s3.headObject({ Bucket: targetBucket, Key: key }).promise();
+            console.log(`[S3Manager] Verification: File exists. LastModified: ${head.LastModified}, Size: ${head.ContentLength}`);
+        } catch (verifyErr) {
+            console.warn(`[S3Manager] Verification failed: ${verifyErr.message}`);
+        }
+
+        return result;
+    } catch (e) {
+        console.error(`[S3Manager] Upload failed for ${key} in bucket ${targetBucket}:`, e);
+        throw e;
+    }
   }
 
   async getJson(key) {

@@ -33,6 +33,8 @@ let currentSeries = null;
 let currentSeason = null;
 let currentEpisode = null;
 
+const DATA_BUCKET = "s3db";
+
 // Check URL Params for Auto Login
 function checkUrlParams() {
   const urlParams = new URLSearchParams(window.location.search);
@@ -230,8 +232,8 @@ appBucketSelector.addEventListener("change", async (e) => {
     // Update S3 Manager context
     window.s3Manager.setBucket(newBucket);
 
-    // Sync new progress context (for the new bucket type)
-    await dbManager.syncFromS3(newBucket);
+    // Sync new progress context (always from DATA_BUCKET)
+    await dbManager.syncFromS3(DATA_BUCKET);
 
     // Reset state
     currentSeries = null;
@@ -281,7 +283,7 @@ async function completeLogin(endpoint, accessKey, secretKey, bucket) {
 
     // Sync Progress
     showLoading(true, "Sincronizzazione progressi...");
-    await dbManager.syncFromS3(bucket);
+    await dbManager.syncFromS3(DATA_BUCKET);
 
     // Load Catalog
     showLoading(true, "Caricamento catalogo...");
@@ -424,6 +426,12 @@ searchInput.addEventListener("input", (e) => {
 async function selectSeries(name, el) {
   try {
     console.log("Selecting series:", name);
+
+    // Sync progress from S3 every time we enter a folder/series
+    // This ensures we always have the latest state even if updated from another device
+    // or if the UI needs a refresh
+    await dbManager.syncFromS3(DATA_BUCKET);
+
     // Highlight
     document
       .querySelectorAll(".series-item")
@@ -589,23 +597,89 @@ function renderEpisodesList(episodes) {
 
     // Initial render (optimistic)
     row.innerHTML = `
-            <div class="flex items-center gap-4">
+            <div class="flex items-center gap-4 flex-1">
                 <div class="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-primary group-hover:text-white transition-colors">
                     <i class="fas fa-play text-xs status-icon"></i>
                 </div>
-                <div>
-                    <h4 class="font-medium text-sm">${ep.name}</h4>
+                <div class="flex-1 min-w-0">
+                    <h4 class="font-medium text-sm truncate pr-2">${
+                      ep.name
+                    }</h4>
                     <p class="text-xs text-gray-400">${formatBytes(ep.size)}</p>
                 </div>
             </div>
-            <div class="resume-info"></div>
+            <div class="flex items-center gap-3">
+                <div class="resume-info"></div>
+                <button class="toggle-watched-btn w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center text-gray-400 hover:text-white transition-colors" title="Segna come visto/non visto">
+                    <i class="fas fa-eye"></i>
+                </button>
+            </div>
         `;
-    row.onclick = () => playEpisode(ep);
+
+    // Bind events
+    row.onclick = (e) => {
+      // Ignore if clicking buttons
+      if (e.target.closest(".toggle-watched-btn")) return;
+      playEpisode(ep);
+    };
+
+    const toggleBtn = row.querySelector(".toggle-watched-btn");
+    toggleBtn.onclick = (e) => toggleWatched(e, ep, row);
+
     episodesList.appendChild(row);
 
     // Fetch progress asynchronously without blocking render
     updateEpisodeProgress(ep, row);
   });
+}
+
+async function toggleWatched(e, ep, row) {
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const icon = btn.querySelector("i");
+
+  // Add loading state
+  icon.className = "fas fa-spinner fa-spin";
+
+  try {
+    // Get current status first
+    const progress = await dbManager.getProgress(
+      currentSeries,
+      currentSeason,
+      ep.name
+    );
+    const isWatched = progress.length > 0 && progress[0].completed;
+    const newStatus = !isWatched;
+
+    // Update DB
+    // If we have existing progress, keep the timestamp, otherwise 0
+    const timestamp = progress.length > 0 ? progress[0].timestamp : 0;
+    const duration = progress.length > 0 ? progress[0].duration : 0;
+
+    await dbManager.updateProgress(
+      currentSeries,
+      currentSeason,
+      ep.name,
+      timestamp,
+      duration,
+      newStatus
+    );
+
+    // Sync to S3
+    await dbManager.syncToS3(DATA_BUCKET);
+
+    // Update UI
+    updateEpisodeProgress(ep, row);
+    showToast(
+      newStatus ? "Segnato come visto" : "Segnato come non visto",
+      "success"
+    );
+  } catch (err) {
+    console.error("Error toggling watched status:", err);
+    showToast("Errore aggiornamento: " + err.message, "error");
+    // Revert UI check
+    updateEpisodeProgress(ep, row);
+  }
 }
 
 async function updateEpisodeProgress(ep, row) {
@@ -620,10 +694,24 @@ async function updateEpisodeProgress(ep, row) {
 
     const icon = row.querySelector(".status-icon");
     const resumeContainer = row.querySelector(".resume-info");
+    const toggleBtnIcon = row.querySelector(".toggle-watched-btn i");
+
+    // Reset state
+    icon.className = "fas fa-play text-xs status-icon";
+    resumeContainer.innerHTML = "";
+    if (toggleBtnIcon) toggleBtnIcon.className = "fas fa-eye";
 
     if (isWatched) {
       icon.classList.remove("fa-play");
       icon.classList.add("fa-check");
+
+      if (toggleBtnIcon) {
+        toggleBtnIcon.classList.add("text-primary");
+      }
+    } else {
+      if (toggleBtnIcon) {
+        toggleBtnIcon.classList.remove("text-primary");
+      }
     }
 
     if (timestamp > 0 && !isWatched) {
@@ -677,7 +765,7 @@ videoPlayer.addEventListener("pause", async () => {
   await saveProgress();
   // Sync to S3 on pause
   try {
-    await dbManager.syncToS3(window.s3Manager.bucket);
+    await dbManager.syncToS3(DATA_BUCKET);
     showToast("Progressi salvati", "success");
   } catch (e) {
     showToast("Errore salvataggio S3: " + e.message, "error");
@@ -688,7 +776,7 @@ videoPlayer.addEventListener("ended", async () => {
   if (!currentEpisode) return;
   await saveProgress(true); // Completed
   try {
-    await dbManager.syncToS3(window.s3Manager.bucket);
+    await dbManager.syncToS3(DATA_BUCKET);
     showToast("Episodio completato!", "success");
   } catch (e) {
     showToast("Errore salvataggio S3: " + e.message, "error");
