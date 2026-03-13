@@ -26,6 +26,76 @@ const searchInput = document.getElementById("search-series");
 const appBucketSelector = document.getElementById("app-bucket-selector");
 const syncStatusBtn = document.getElementById("sync-status");
 const logoutBtn = document.getElementById("logout-btn");
+const remotePlaybackBtn = document.getElementById("remote-playback-btn");
+const remotePlaybackIcon = document.getElementById("remote-playback-icon");
+const remotePlaybackLabel = document.getElementById("remote-playback-label");
+
+// RemotePlayback State
+let remoteAvailabilityId = null;
+
+function initRemotePlayback() {
+  if (!("remote" in videoPlayer)) {
+    // API not supported in this browser
+    return;
+  }
+
+  const remote = videoPlayer.remote;
+
+  // Watch for available devices
+  remote
+    .watchAvailability((available) => {
+      if (available) {
+        remotePlaybackBtn.classList.remove("hidden");
+        remotePlaybackBtn.classList.add("flex");
+      } else {
+        remotePlaybackBtn.classList.add("hidden");
+        remotePlaybackBtn.classList.remove("flex");
+      }
+    })
+    .then((id) => {
+      remoteAvailabilityId = id;
+    })
+    .catch(() => {
+      // watchAvailability not supported or failed silently
+    });
+
+  // State change handlers
+  remote.onconnecting = () => {
+    remotePlaybackBtn.classList.remove("connected");
+    remotePlaybackBtn.classList.add("connecting");
+    remotePlaybackIcon.className = "fas fa-spinner fa-spin";
+    remotePlaybackLabel.textContent = "Connessione...";
+  };
+
+  remote.onconnect = () => {
+    remotePlaybackBtn.classList.remove("connecting");
+    remotePlaybackBtn.classList.add("connected");
+    remotePlaybackIcon.className = "fas fa-tv";
+    remotePlaybackLabel.textContent = "In proiezione";
+    showToast("Proiezione avviata sul dispositivo remoto", "success");
+  };
+
+  remote.ondisconnect = () => {
+    remotePlaybackBtn.classList.remove("connecting", "connected");
+    remotePlaybackIcon.className = "fas fa-tv";
+    remotePlaybackLabel.textContent = "Proietta";
+    showToast("Proiezione terminata", "info");
+  };
+
+  // Button click: prompt device selection
+  remotePlaybackBtn.addEventListener("click", () => {
+    if (remote.state === "connected") {
+      // Already connected — disconnect by prompting again (browser handles it)
+      remote.prompt().catch(() => {});
+    } else {
+      remote.prompt().catch((err) => {
+        if (err.name !== "AbortError") {
+          showToast("Impossibile avviare la proiezione: " + err.message, "error");
+        }
+      });
+    }
+  });
+}
 
 // State
 let catalog = {};
@@ -60,6 +130,8 @@ function checkUrlParams() {
 
 // Init Logic
 window.addEventListener("DOMContentLoaded", () => {
+  // Initialize RemotePlayback feature
+  initRemotePlayback();
   if (checkUrlParams()) {
     loginForm.classList.remove("hidden");
     unlockForm.classList.add("hidden");

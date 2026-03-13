@@ -1,0 +1,8 @@
+127.0.0.1 - - [13/Mar/2026 09:51:38] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [13/Mar/2026 09:51:41] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [13/Mar/2026 09:51:41] "GET /assets/css/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [13/Mar/2026 09:51:41] "GET /assets/js/crypto-utils.js HTTP/1.1" 200 -
+127.0.0.1 - - [13/Mar/2026 09:51:41] "GET /assets/js/s3-manager.js HTTP/1.1" 200 -
+127.0.0.1 - - [13/Mar/2026 09:51:41] "GET /assets/js/duckdb-manager.js HTTP/1.1" 200 -
+127.0.0.1 - - [13/Mar/2026 09:51:41] "GET /assets/js/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [13/Mar/2026 09:51:41] "GET /assets/favicon.svg HTTP/1.1" 200 -
